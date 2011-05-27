@@ -1,0 +1,227 @@
+--- flac-1.2.1/include/FLAC/stream_encoder.h	2007-09-13 11:34:12.000000000 -0400
++++ include/FLAC/stream_encoder.h	2008-04-15 22:33:52.000000000 -0400
+@@ -69,6 +69,26 @@
+  * optional progress callback for periodic notification of progress; the
+  * write and seek callbacks are supplied internally.  For more info see the
+  * \link flac_stream_encoder stream encoder \endlink module.
++ *
++ * Modified April 2008
++ * by Christopher Peplin & Maxwell Miller
++ * University of Michigan
++ * peplin@umich.edu, mgmiller@umich.edu
++ *
++ * Added:
++ *  FLAC__stream_encoder_process_interleaved_no_write
++ *  FLAC__stream_encoder_set_current_frame
++ *  FLAC__stream_encoder_parallel_initialize
++ *  FLAC__stream_encoder_finish_parallel
++ *  FLAC__stream_encoder_init_FILE_parallel
++ *
++ *  write_bitbuffer_parallel
++ *  process_frame_no_write
++ *  process_subframes_parallel
++ *
++ * These functions expose some details of the libFLAC C library in order to
++ * reduce data dependencies when splitting on blocks of audio. They are designed
++ * specifically for use in an Intel Threading Building Blocks pipeline.
+  */
+ 
+ /** \defgroup flac_stream_encoder FLAC/stream_encoder.h: stream encoder interface
+@@ -676,6 +696,10 @@
+  */
+ typedef void (*FLAC__StreamEncoderProgressCallback)(const FLAC__StreamEncoder *encoder, FLAC__uint64 bytes_written, FLAC__uint64 samples_written, unsigned frames_written, unsigned total_frames_estimate, void *client_data);
+ 
++typedef struct {
++    FLAC__StreamEncoder *subencoder1, *subencoder2;
++} SubencoderStruct;
++
+ 
+ /***********************************************************************
+  *
+@@ -707,6 +731,9 @@
+  *
+  ***********************************************************************/
+ 
++/** Duplicate the settings of enc in this - NOT buffers */
++FLAC_API FLAC__StreamEncoder *FLAC__copyFrom(FLAC__StreamEncoder *enc);
++
+ /** Set the serial number for the FLAC stream to use in the Ogg container.
+  *
+  * \note
+@@ -1759,6 +1786,176 @@
+  */
+ FLAC_API FLAC__bool FLAC__stream_encoder_process_interleaved(FLAC__StreamEncoder *encoder, const FLAC__int32 buffer[], unsigned samples);
+ 
++
++/**
++ * TBB Pipeline Specific Methods
++ */
++
++/** Submit data for encoding.
++ * This version accepts full blocks only - there is no mechanism for building
++ * a larger buffer from sample subsets. It accepts a limited set of files, described
++ * in the parallel encoder's documentation.
++ *
++ * Besides that, the changes from the serial verion are:
++ *  using a secondary encoder instead of the shared, primary encoder
++ *  with a full block, calls process_frame_no_write instead of process_frame
++ *  uses shared encoder when processing the last block
++ *  there is no 1 sample overread - it is unnecessary for our implementation
++ *
++ * The motive for process_frame_no_write is to separate the I/O from calculation, so
++ * a pipeline could be implemented. Before returning, parallelEncoder will have a
++ * full frame buffer ready to write to disk.
++ *
++ * \param  encoder  An initialized encoder instance in the OK state.
++ * \param  buffer   An array of channel-interleaved data (see above, must be a full block).
++ * \param  samples  The number of samples in one channel, the same as for
++ *                  FLAC__stream_encoder_process().  For example, if
++ *                  encoding two channels, \c 1000 \a samples corresponds
++ *                  to a \a buffer of 2000 values.
++ * \param  parallelEncoder An initialized encoder instance with no shared data between all filters
++ * \param  lastBlock    A boolean indicating if this is the last block - uses buffer of encoder
++ *                      instead of parallelEncoder if true
++ * \assert
++ *    \code encoder != NULL \endcode
++ *    \code FLAC__stream_encoder_get_state(encoder) == FLAC__STREAM_ENCODER_OK \endcode
++ * \retval FLAC__bool
++ *    \c true if successful, else \c false; in this case, check the
++ *    encoder state with FLAC__stream_encoder_get_state() to see what
++ *    went wrong.
++ */
++FLAC_API FLAC__bool FLAC__stream_encoder_process_interleaved_no_write(FLAC__StreamEncoder *encoder, const FLAC__int32 buffer[], unsigned samples, FLAC__StreamEncoder *parallelEncoder, FLAC__bool lastBlock);
++
++/** Set the current frame of the encoder.
++ * This is a simple function created to expose this detail of the libFLAC implementation,
++ * frame numbers, to the parallel encoder.
++ *
++ * \param  encoder  An initialized encoder instance in the OK state.
++ * \param  value    The current frame value to set
++ * \assert
++ *    \code encoder != NULL \endcode
++ *    \code FLAC__stream_encoder_get_state(encoder) == FLAC__STREAM_ENCODER_OK \endcode
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__bool FLAC__stream_encoder_set_current_frame(FLAC__StreamEncoder *encoder, unsigned value);
++
++/** Initialize an encoder with the mandatory settings for the parallel encoder.
++ * The result will be an encoder identical to the shared encoder, besides for unimportant metadata.
++ * Uses stream_encoder_init_FILE_parallel instead of stream_encoder_init_FILE to avoid opening
++ * the input file twice (parallel encoders only need to use FILE* - they do NOT
++ * own the FILE*, and should not close it.
++ *
++ * This uses compression_level to call FLAC__stream_encoder_set_compression_level.
++ * There is no easy to way to mimic the many settings that function controls, as compression_level
++ * is not stored directly in the encoder and is only used as a parameter to set a large
++ * group of attributes.
++ *
++ * \param  encoder  An initialized encoder instance in the OK state.
++ * \param parallelEncoder An uninitialized encoder istance to initialize
++ * \param  compression_level a simple way to mimic settings of encoder in parallelEncoder
++ * \assert
++ *    \code encoder != NULL \endcode
++ *    \code FLAC__stream_encoder_get_state(encoder) == FLAC__STREAM_ENCODER_OK \endcode
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__StreamEncoderInitStatus FLAC__stream_encoder_parallel_initialize(FLAC__StreamEncoder *encoder_, FLAC__StreamEncoder *parallelEncoder, unsigned int compression_level);
++
++/** Completes the internal initialization of a parallel encoder.
++ *
++ * This function is similar to the serial version, but it does not open the file
++ * or write any header information. The file is assumed to be open already
++ * (NOT ASSERTED). The shared encoder uses the serial version of this function to open
++ * the file and write the header, and then parallel encoders use this version
++ * to only write audio data frames.
++ *
++ * \param  encoder            An uninitialized encoder instance.
++ * \param  filename           The name of the file to encode to.  The file will
++ *                            be opened with fopen().  Use \c NULL to encode to
++ *                            \c stdout.  Note however that a proper SEEKTABLE
++ *                            cannot be created when encoding to \c stdout since
++ *                            it is not seekable.
++ * \param  progress_callback  See FLAC__StreamEncoderProgressCallback.  This
++ *                            pointer may be \c NULL if the callback is not
++ *                            desired.
++ * \param  client_data        This value will be supplied to callbacks in their
++ *                            \a client_data argument.
++ * \assert
++ *    \code encoder != NULL \endcode
++ * \retval FLAC__StreamEncoderInitStatus
++ *    \c FLAC__STREAM_ENCODER_INIT_STATUS_OK if initialization was successful;
++ *    see FLAC__StreamEncoderInitStatus for the meanings of other return values.
++ */
++FLAC_API FLAC__StreamEncoderInitStatus FLAC__stream_encoder_init_FILE_parallel(FLAC__StreamEncoder *encoder, FILE *file, FLAC__StreamEncoderProgressCallback progress_callback, void *client_data);
++
++/** Uninitializes the encoder and frees buffer memory
++ * This is simply a parallel safe version of FLAC__stream_encoder_finish.
++ * It does not close the FILE* - that is up to the shared encoder.
++ *
++ * \param  encoder  An initialized encoder instance in the OK state.
++ * \assert
++ *    \code encoder != NULL \endcode
++ *    \code FLAC__stream_encoder_get_state(encoder) == FLAC__STREAM_ENCODER_OK \endcode
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__bool FLAC__stream_encoder_finish_parallel(FLAC__StreamEncoder *encoder);
++
++/** Writes a bitbuffer to file
++ * This function is similar to its serial counterpart, but it reads constant encoder
++ * metadata from the sharedEncoder while reading the buffer from the parallel encoder.
++ *
++ * It also updates the current frame number in the shared encoder. There are possible
++ * data dependency and locking issues here, but because this function is called from
++ * a serial filter (see filters.h::OutputFilter) it becomes a non-issue.
++ *
++ * \param  sharedEncoder  An initialized encoder instance in the OK state containined shared metadata.
++ * \param localEncoder  An initialized encoder instance in the OK state containing a valid frame buffer.
++ * \param samples   the number of samples to write, usually a full block
++ * \assert
++ *    \code FLAC__bitwriter_is_byte_aligned(localEncoder->private_->frame)
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__bool write_bitbuffer_parallel(FLAC__StreamEncoder *sharedEncoder, FLAC__StreamEncoder *localEncoder, unsigned samples);
++
++/** Process one frame of audio
++ *
++ * This function is similar in purpose to the serial version, except as the name implies
++ * the write stage is skipped, and the buffer is not cleared.
++ *
++ * Used by process_interleaved_no_write
++ *
++ * MD5 accumulation is currently disabled to to memory allocation issues. This needs to be fixed
++ * before verification of encoded FLAC files will work.
++ *
++ * \param  sharedEncoder  An initialized encoder instance in the OK state containined shared metadata.
++ * \param localEncoder  An initialized encoder instance in the OK state containing a valid frame buffer.
++ * \assert
++ *    \code FLAC__bitwriter_is_byte_aligned(localEncoder->private_->frame)
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__bool process_frame_no_write(FLAC__StreamEncoder *sharedEncoder, FLAC__StreamEncoder *localEncoder);
++
++/** Process one subframe of audio
++ *
++ * This function is identical in purpose to the serial version, except it
++ * uses sharedEncoder to read shared metadata and actually processes the buffer in
++ * localEncoder. The current frame number is no longer incremented here - that is moved to the pipeline itself.
++ *
++ * Used by process_interleaved_no_write
++ *
++ * \param  sharedEncoder  An initialized encoder instance in the OK state containined shared metadata.
++ * \param localEncoder  An initialized encoder instance in the OK state containing a valid frame buffer.
++ * \assert
++ *    \code FLAC__bitwriter_is_byte_aligned(localEncoder->private_->frame)
++ * \retval FLAC__bool
++ *    \c true - this will never fail if the assertions hold
++ */
++FLAC_API FLAC__bool process_subframes_parallel(FLAC__StreamEncoder *sharedEncoder, FLAC__StreamEncoder *localEncoder);
++
++
+ /* \} */
+ 
+ #ifdef __cplusplus

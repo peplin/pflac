@@ -1,0 +1,66 @@
+--- flac-1.2.1/include/FLAC++/encoder.h	2007-09-12 19:40:24.000000000 -0400
++++ include/FLAC++/encoder.h	2008-04-15 22:56:26.000000000 -0400
+@@ -38,6 +38,7 @@
+ #include "decoder.h"
+ #include "metadata.h"
+ 
++#define READSIZE 1024
+ 
+ /** \file include/FLAC++/encoder.h
+  *
+@@ -45,6 +46,8 @@
+  *  This module contains the classes which implement the various
+  *  encoders.
+  *
++ *  Modified April 2008 to include methods for a TBB parallel pipeline frontend.
++ *
+  *  See the detailed documentation in the
+  *  \link flacpp_encoder encoder \endlink module.
+  */
+@@ -73,8 +76,22 @@
+  * FLAC__stream_encoder_init_FILE() and FLAC__stream_encoder_init_file() /
+  * FLAC__stream_encoder_init_ogg_FILE() and FLAC__stream_encoder_init_ogg_file()
+  * are used.
++ *
++ *
++ * Modified April 2008
++ * by Christopher Peplin & Maxwell Miller
++ * University of Michigan
++ * peplin@umich.edu, mgmiller@umich.edu
++ *
++ * Added process_interleaved_no_write, write_parallel and parallel_initialize
++ *
++ * These functions expose some details of the libFLAC C library in order to
++ * reduce data dependencies when splitting on blocks of audio. They are designed
++ * specifically for use in an Intel Threading Building Blocks pipeline.
+  */
+ 
++
++
+ namespace FLAC {
+ 	namespace Encoder {
+ 
+@@ -176,6 +193,16 @@
+ 
+ 			virtual bool process(const FLAC__int32 * const buffer[], unsigned samples);     ///< See FLAC__stream_encoder_process()
+ 			virtual bool process_interleaved(const FLAC__int32 buffer[], unsigned samples); ///< See FLAC__stream_encoder_process_interleaved()
++
++            /* Begin parallel methods */
++
++            virtual bool process_interleaved_no_write(const FLAC__int32 buffer[], unsigned samples, FLAC__StreamEncoder *parallelEncoder, bool lastBlock);
++            virtual bool write_parallel(FLAC__StreamEncoder *localEncoder);
++
++            virtual ::FLAC__StreamEncoderInitStatus parallel_initialize(FLAC__StreamEncoder *parallelEncoder, unsigned int compression_level);
++
++            /* End parallel methods */
++
+ 		protected:
+ 			/// See FLAC__StreamEncoderReadCallback
+ 			virtual ::FLAC__StreamEncoderReadStatus read_callback(FLAC__byte buffer[], size_t *bytes);
+@@ -257,4 +284,6 @@
+ 	}
+ }
+ 
++
++
+ #endif

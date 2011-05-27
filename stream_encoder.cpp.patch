@@ -1,0 +1,40 @@
+--- flac-1.2.1/src/libFLAC++/stream_encoder.cpp	2007-02-02 01:21:28.000000000 -0500
++++ src/libFLAC++/stream_encoder.cpp	2008-04-15 20:43:39.000000000 -0400
+@@ -29,6 +29,12 @@
+  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  */
+ 
++/* Includes modifications for TBB parallel pipeline.
++ *
++ * Specifically:
++ * process_interleaved_no_write, write_parallel and parallel_initialize
++ */
++
+ #include "FLAC++/encoder.h"
+ #include "FLAC++/metadata.h"
+ #include "FLAC/assert.h"
+@@ -365,6 +371,24 @@
+ 			return (bool)::FLAC__stream_encoder_process_interleaved(encoder_, buffer, samples);
+ 		}
+ 
++        bool Stream::process_interleaved_no_write(const FLAC__int32 buffer[], unsigned samples, FLAC__StreamEncoder *parallelEncoder, bool lastBlock)
++        {
++            FLAC__ASSERT(is_valid());
++            return (bool)::FLAC__stream_encoder_process_interleaved_no_write(encoder_, buffer, samples, parallelEncoder, lastBlock);
++        }
++
++         bool Stream::write_parallel(FLAC__StreamEncoder *localEncoder)
++        {
++            FLAC__ASSERT(is_valid());
++            return (bool)::write_bitbuffer_parallel(encoder_, localEncoder, FLAC__stream_encoder_get_blocksize(encoder_));
++        }
++
++        ::FLAC__StreamEncoderInitStatus Stream::parallel_initialize(FLAC__StreamEncoder *parallelEncoder, unsigned int compression_level)
++        {
++            FLAC__ASSERT(is_valid());
++            return ::FLAC__stream_encoder_parallel_initialize(encoder_, parallelEncoder, compression_level);
++        }
++
+ 		::FLAC__StreamEncoderReadStatus Stream::read_callback(FLAC__byte buffer[], size_t *bytes)
+ 		{
+ 			(void)buffer, (void)bytes;
