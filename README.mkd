@@ -3,3 +3,7 @@ pflac - modifications for a parallel FLAC encoder
 
 See the [in-depth writeup](http://christopherpeplin.com/2011/05/pflac/) on these
 modifications.
+
+## License
+
+This project is available under the MIT open source license.
